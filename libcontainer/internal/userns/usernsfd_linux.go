@@ -90,6 +90,8 @@ func spawnProc(req Mapping) (*os.Process, error) {
 	// they have privileges over.
 	logrus.Debugf("spawning dummy process for id-mapping %s", req.id())
 	uidMappings, gidMappings := req.toSys()
+	logrus.Errorf("DEBUG: In spawnProc, uidMappings: %v", uidMappings)
+	logrus.Errorf("DEBUG: In spawnProc, gidMappings: %v", gidMappings)
 	// We don't need to use /proc/thread-self here because the exe mm of a
 	// thread-group is guaranteed to be the same for all threads by definition.
 	// This lets us avoid having to do runtime.LockOSThread.
@@ -149,6 +151,7 @@ func (hs *Handles) Get(req Mapping) (file *os.File, err error) {
 			return nil, err
 		}
 		hs.maps[req.id()] = file
+		logrus.Errorf("spawned userns %s for mapping %s", file.Name(), req.id())
 	}
 	// Duplicate the file, to make sure the lifecycle of each *os.File we
 	// return is independent.

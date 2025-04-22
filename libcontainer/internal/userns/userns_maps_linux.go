@@ -106,6 +106,7 @@ func spawnUserNamespaceCat(nsPath string, path string) ([]byte, error) {
 		logrus.Debugf("userns spawn succeeded but unexpected error message found: %s", string(errOutput))
 	}
 	// The subprocess succeeded, return whatever it wrote to the pipe.
+	logrus.Debugf("Output: ", string(output))
 	return output, nil
 }
 

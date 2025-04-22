@@ -97,7 +97,9 @@ func mount(source, target, fstype string, flags uintptr, data string) error {
 // corresponding path is only used to add context to an error in case the mount
 // operation has failed.
 func mountViaFds(source string, srcFile *mountSource, target, dstFd, fstype string, flags uintptr, data string) error {
+	logrus.Errorf("DEBUG: In mountViaFds, source=%s, srcFile=%+v, target=%s, dstFd=%s, fstype=%s, flags=0x%x, data=%s", source, srcFile, target, dstFd, fstype, flags, data)
 	// MS_REMOUNT and srcFile don't make sense together.
+	logrus.Errorf("DEBUG: In mountViaFds not continuing: %v", srcFile != nil && flags&unix.MS_REMOUNT != 0)
 	if srcFile != nil && flags&unix.MS_REMOUNT != 0 {
 		logrus.Debugf("mount source passed along with MS_REMOUNT -- ignoring srcFile")
 		srcFile = nil
@@ -108,6 +110,7 @@ func mountViaFds(source string, srcFile *mountSource, target, dstFd, fstype stri
 	}
 	src := source
 	isMoveMount := srcFile != nil && srcFile.Type == mountSourceOpenTree
+	logrus.Errorf("DEBUG: In mountViaFds, isMoveMount=%v", isMoveMount)
 	if srcFile != nil {
 		// If we're going to use the /proc/thread-self/... path for classic
 		// mount(2), we need to get a safe handle to /proc/thread-self. This
@@ -132,6 +135,7 @@ func mountViaFds(source string, srcFile *mountSource, target, dstFd, fstype stri
 			unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_SYMLINKS)
 	} else {
 		op = "mount"
+		logrus.Errorf("DEBUG: In mountViaFds, calling unix.Mount(%s, %s, %s, 0x%x, %s)", src, dst, fstype, flags, data)
 		err = unix.Mount(src, dst, fstype, flags, data)
 	}
 	if err != nil {
@@ -192,6 +196,7 @@ func syscallMode(i fs.FileMode) (o uint32) {
 //
 // This helper is only intended to be used by goCreateMountSources.
 func mountFd(nsHandles *userns.Handles, m *configs.Mount) (*mountSource, error) {
+	logrus.Errorf("DEBUG: In mountFd, m.Source=%s, m.IDMapping=%+v", m.Source, m.IDMapping)
 	if !m.IsBind() {
 		return nil, errors.New("new mount api: only bind-mounts are supported")
 	}
@@ -230,7 +235,9 @@ func mountFd(nsHandles *userns.Handles, m *configs.Mount) (*mountSource, error) 
 
 		// Configure the id mapping.
 		var usernsFile *os.File
+		logrus.Errorf("DEBUG: In mountFd, m.IDMapping.UserNSPath=%s", m.IDMapping.UserNSPath)
 		if m.IDMapping.UserNSPath == "" {
+			logrus.Errorf("DEBUG: In mountFd, creating userns for %s id-mapping %v - %v", m.Source, m.IDMapping.UIDMappings, m.IDMapping.GIDMappings)
 			usernsFile, err = nsHandles.Get(userns.Mapping{
 				UIDMappings: m.IDMapping.UIDMappings,
 				GIDMappings: m.IDMapping.GIDMappings,
@@ -254,6 +261,7 @@ func mountFd(nsHandles *userns.Handles, m *configs.Mount) (*mountSource, error) 
 		if m.IDMapping.Recursive {
 			setAttrFlags |= unix.AT_RECURSIVE
 		}
+		logrus.Errorf("DEBUG: In mountFd, setting MOUNT_ATTR_IDMAP on %s with idmapping %v (mountFile: %v)", m.Source, m.IDMapping, mountFile)
 		if err := unix.MountSetattr(int(mountFile.Fd()), "", setAttrFlags, &unix.MountAttr{
 			Attr_set:  unix.MOUNT_ATTR_IDMAP,
 			Userns_fd: uint64(usernsFile.Fd()),
@@ -265,6 +273,31 @@ func mountFd(nsHandles *userns.Handles, m *configs.Mount) (*mountSource, error) 
 
 			return nil, fmt.Errorf("failed to set MOUNT_ATTR_IDMAP on %s: %w%s", m.Source, err, extraMsg)
 		}
+
+		// Directly bind mount into the container's mount namespace
+		// logrus.Errorf("DEBUG: In mountFd, about to bind %s", m.Destination)
+		// if m.Destination == "/etc/secret-volume" {
+		// 	logrus.Errorf("DEBUG: In mountFd, binding %s to /tmp/test-host-path", m.Source)
+		// 	err = unix.Mount(
+		// 		m.Source,	  // Host path (e.g., /var/lib/kubelet/.../secret-volume)
+		// 		"/tmp/bind-test", // Container path (e.g., /etc/secret-volume)
+		// 		"",			// Filesystem type (empty for bind mounts)
+		// 		unix.MS_BIND,  // Bind mount flag
+		// 		"",			// Mount data (empty for bind mounts)
+		// 	)
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("failed to bind mount %s to %s: %w", m.Source, m.Destination, err)
+		// 	}
+		// }
+		// fileinfo, err := os.Stat(m.Source)
+		// if err != nil {
+		// 	return nil, fmt.Errorf("failed to stat %s: %w", m.Source, err)
+		// }
+		// stat, ok := fileinfo.Sys().(*syscall.Stat_t)
+		// if !ok {
+		// 	return nil, fmt.Errorf("failed to get stat information for %s", m.Source)
+		// }
+		// logrus.Errorf("File Owner UID: %d, GID: %d (%v ------- %v)\n", stat.Uid, stat.Gid, stat, fileinfo)
 	} else {
 		var err error
 		mountFile, err = os.OpenFile(m.Source, unix.O_PATH|unix.O_CLOEXEC, 0)

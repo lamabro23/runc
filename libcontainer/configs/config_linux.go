@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -31,6 +33,7 @@ func (c Config) HostUID(containerId int) (int, error) {
 		if len(c.UIDMappings) == 0 {
 			return -1, errNoUIDMap
 		}
+		logrus.Errorf("DEBUG: UIDMappings: %v", c.UIDMappings)
 		id, found := c.hostIDFromMapping(int64(containerId), c.UIDMappings)
 		if !found {
 			return -1, fmt.Errorf("user namespaces enabled, but no mapping found for uid %d", containerId)

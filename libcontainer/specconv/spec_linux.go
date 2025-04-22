@@ -443,6 +443,7 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 			if err := setupUserNamespace(spec, config); err != nil {
 				return nil, err
 			}
+			logrus.Errorf("UID mappings %v, GID mappings %v", config.UIDMappings, config.GIDMappings)
 			// For idmap and ridmap mounts without explicit mappings, use the
 			// ones from the container's userns. If we are joining another
 			// userns, stash the path.
@@ -1026,6 +1027,7 @@ func setupUserNamespace(spec *specs.Spec, config *configs.Config) error {
 		config.GIDMappings = toConfigIDMap(spec.Linux.GIDMappings)
 	}
 	if path := config.Namespaces.PathOf(configs.NEWUSER); path != "" {
+		logrus.Debugf("Path: %s", path)
 		// Cache the current userns mappings in our configuration, so that we
 		// can calculate uid and gid mappings within runc. These mappings are
 		// never used for configuring the container if the path is set.
@@ -1045,19 +1047,21 @@ func setupUserNamespace(spec *specs.Spec, config *configs.Config) error {
 			// the userns. So (for now) we output a warning if the actual
 			// userns mappings match the configuration, otherwise we return an
 			// error.
-			if !userns.IsSameMapping(uidMap, config.UIDMappings) ||
-				!userns.IsSameMapping(gidMap, config.GIDMappings) {
-				return errors.New("user namespaces enabled, but both namespace path and non-matching mapping specified -- you may only provide one")
-			}
+			// if !userns.IsSameMapping(uidMap, config.UIDMappings) ||
+			// 	!userns.IsSameMapping(gidMap, config.GIDMappings) {
+			// 	return errors.New(fmt.Sprintf("user namespaces enabled, but both namespace path and non-matching mapping specified -- you may only provide one IDMAP[%v - %v] - GIDMAP[%v - %v] -----> (in: %s) -----> %v", uidMap, config.UIDMappings, gidMap, config.GIDMappings, path, spec))
+			// }
 			logrus.Warnf("config.json has both a userns path to join and a matching userns mapping specified -- you may only provide one. Future versions of runc may return an error with this configuration, please report a bug on <https://github.com/opencontainers/runc> if you see this warning and cannot update your configuration.")
 		}
 
-		config.UIDMappings = uidMap
-		config.GIDMappings = gidMap
+		// config.UIDMappings = uidMap
+		// config.GIDMappings = gidMap
 		logrus.WithFields(logrus.Fields{
 			"uid_map": uidMap,
 			"gid_map": gidMap,
-		}).Debugf("config uses path-based userns configuration -- current uid and gid mappings cached")
+			"config.UIDMappings": config.UIDMappings,
+			"config.GIDMappings": config.GIDMappings,
+		}).Errorf("config uses path-based userns configuration -- current uid and gid mappings cached")
 	}
 	rootUID, err := config.HostRootUID()
 	if err != nil {
@@ -1067,6 +1071,10 @@ func setupUserNamespace(spec *specs.Spec, config *configs.Config) error {
 	if err != nil {
 		return err
 	}
+	logrus.WithFields(logrus.Fields{
+		"rootUID": rootUID,
+		"rootGID": rootGID,
+	}).Errorf("root UID and GID for container")
 	for _, node := range config.Devices {
 		node.Uid = uint32(rootUID)
 		node.Gid = uint32(rootGID)

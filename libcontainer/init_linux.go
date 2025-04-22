@@ -462,27 +462,32 @@ func syncParentSeccomp(pipe *syncSocket, seccompFd int) error {
 // setupUser changes the groups, gid, and uid for the user inside the container
 func setupUser(config *initConfig) error {
 	// Set up defaults.
+	logrus.Debugf("[1] setting up user %q in new user namespace", config.User)
 	defaultExecUser := user.ExecUser{
 		Uid:  0,
 		Gid:  0,
 		Home: "/",
 	}
 
+	logrus.Debugf("[2] Checking for /etc/passwd and /etc/group files")
 	passwdPath, err := user.GetPasswdPath()
 	if err != nil {
 		return err
 	}
 
+	logrus.Debugf("[3] Checking for /etc/group file")
 	groupPath, err := user.GetGroupPath()
 	if err != nil {
 		return err
 	}
 
+	logrus.Debugf("[4] Getting exec user")
 	execUser, err := user.GetExecUserPath(config.User, &defaultExecUser, passwdPath, groupPath)
 	if err != nil {
 		return err
 	}
 
+	logrus.Debugf("[5] Getting additional groups based on %v (path %v)", config.AdditionalGroups, groupPath)
 	var addGroups []int
 	if len(config.AdditionalGroups) > 0 {
 		addGroups, err = user.GetAdditionalGroupsPath(config.AdditionalGroups, groupPath)
@@ -491,6 +496,7 @@ func setupUser(config *initConfig) error {
 		}
 	}
 
+	logrus.Debugf("[6] Checking for Rootless EUID")
 	if config.RootlessEUID {
 		// We cannot set any additional groups in a rootless container and thus
 		// we bail if the user asked us to do so. TODO: We currently can't do
@@ -501,12 +507,14 @@ func setupUser(config *initConfig) error {
 		}
 	}
 
+	logrus.Debugf("[7] Fixing stdio permissions")
 	// Before we change to the container's user make sure that the processes
 	// STDIO is correctly owned by the user that we are switching to.
 	if err := fixStdioPermissions(execUser); err != nil {
 		return err
 	}
 
+	logrus.Debugf("[8] Setting groups, gid, and uid")
 	// We don't need to use /proc/thread-self here because setgroups is a
 	// per-userns file and thus is global to all threads in a thread-group.
 	// This lets us avoid having to do runtime.LockOSThread.
@@ -519,21 +527,26 @@ func setupUser(config *initConfig) error {
 	// There's nothing we can do about /etc/group entries, so we silently
 	// ignore setting groups here (since the user didn't explicitly ask us to
 	// set the group).
+	logrus.Debugf("[9] Setting groups")
 	allowSupGroups := !config.RootlessEUID && string(bytes.TrimSpace(setgroups)) != "deny"
 
+	logrus.Debugf("[10] Setting groups, gid, and uid")
 	if allowSupGroups {
 		suppGroups := append(execUser.Sgids, addGroups...)
+		logrus.Debugf("[10.1] Setting groups %v (made from %v and %v)", suppGroups, execUser.Sgids, addGroups)
 		if err := unix.Setgroups(suppGroups); err != nil {
 			return &os.SyscallError{Syscall: "setgroups", Err: err}
 		}
 	}
 
+	logrus.Debugf("[11] Setting gid and uid")
 	if err := unix.Setgid(execUser.Gid); err != nil {
 		if err == unix.EINVAL {
 			return fmt.Errorf("cannot setgid to unmapped gid %d in user namespace", execUser.Gid)
 		}
 		return err
 	}
+	logrus.Debugf("[12] Setting uid")
 	if err := unix.Setuid(execUser.Uid); err != nil {
 		if err == unix.EINVAL {
 			return fmt.Errorf("cannot setuid to unmapped uid %d in user namespace", execUser.Uid)
@@ -541,6 +554,7 @@ func setupUser(config *initConfig) error {
 		return err
 	}
 
+	logrus.Debugf("[12] Setting HOME")
 	// if we didn't get HOME already, set it based on the user's HOME
 	if envHome := os.Getenv("HOME"); envHome == "" {
 		if err := os.Setenv("HOME", execUser.Home); err != nil {

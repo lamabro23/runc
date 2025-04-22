@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -147,6 +148,7 @@ func MkdirAllHandle(root *os.File, unsafePath string, mode os.FileMode) (_ *os.F
 		// directory at the same time as us. In that case, just continue on as
 		// if we created it (if the created inode is not a directory, the
 		// following open call will fail).
+		logrus.Errorf("Creating directory %q in %q (%v)", part, currentDir.Name(), unixMode)
 		if err := unix.Mkdirat(int(currentDir.Fd()), part, unixMode); err != nil && !errors.Is(err, unix.EEXIST) {
 			err = &os.PathError{Op: "mkdirat", Path: currentDir.Name() + "/" + part, Err: err}
 			// Make the error a bit nicer if the directory is dead.

@@ -482,14 +482,17 @@ func statfsToMountFlags(st unix.Statfs_t) int {
 var errRootfsToFile = errors.New("config tries to change rootfs to file")
 
 func createMountpoint(rootfs string, m mountEntry) (string, error) {
+	logrus.Errorf("DEBUG: In createMountpoint m.Destination: %s", m.Destination)
 	dest, err := securejoin.SecureJoin(rootfs, m.Destination)
 	if err != nil {
 		return "", err
 	}
+	logrus.Errorf("DEBUG: In createMountpoint dest: %s", dest)
 	if err := checkProcMount(rootfs, dest, m); err != nil {
 		return "", fmt.Errorf("check proc-safety of %s mount: %w", m.Destination, err)
 	}
 
+	logrus.Errorf("DEBUG: In createMountpoint m.Device: %s", m.Device)
 	switch m.Device {
 	case "bind":
 		fi, _, err := m.srcStat()
@@ -500,6 +503,7 @@ func createMountpoint(rootfs string, m mountEntry) (string, error) {
 		}
 		// If the original source is not a directory, make the target a file.
 		if !fi.IsDir() {
+			logrus.Errorf("DEBUG: In createMountpoint m.Destination: %s !isDir", m.Destination)
 			// Make sure we aren't tricked into trying to make the root a file.
 			if rootfs == dest {
 				return "", fmt.Errorf("%w: file bind mount over rootfs", errRootfsToFile)
@@ -531,6 +535,7 @@ func createMountpoint(rootfs string, m mountEntry) (string, error) {
 
 	case "tmpfs":
 		// If the original target exists, copy the mode for the tmpfs mount.
+		logrus.Errorf("DEBUG: In createMountpoint m.Device: %s tmpfs to destination: %s (og: %s) ", m.Device, dest, m.Destination)
 		if stat, err := os.Stat(dest); err == nil {
 			dt := fmt.Sprintf("mode=%04o", syscallMode(stat.Mode()))
 			if m.Data != "" {
@@ -543,6 +548,7 @@ func createMountpoint(rootfs string, m mountEntry) (string, error) {
 		}
 	}
 
+	logrus.Errorf("DEBUG: In createMountpoint going to create dest: %s", dest)
 	if err := utils.MkdirAllInRoot(rootfs, dest, 0o755); err != nil {
 		return "", err
 	}
@@ -550,6 +556,7 @@ func createMountpoint(rootfs string, m mountEntry) (string, error) {
 }
 
 func mountToRootfs(c *mountConfig, m mountEntry) error {
+	logrus.Errorf("DEBUG: In mountToRootfs m.Destination: %s with %s", m.Destination, m.Device)
 	rootfs := c.root
 
 	// procfs and sysfs are special because we need to ensure they are actually
@@ -596,6 +603,7 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 		}
 		return label.SetFileLabel(dest, mountLabel)
 	case "tmpfs":
+		logrus.Errorf("DEBUG: In mountToRootfs going to mount tmpfs %s (%s)", m.Destination, rootfs)
 		if m.Extensions&configs.EXT_COPYUP == configs.EXT_COPYUP {
 			err = doTmpfsCopyUp(m, rootfs, mountLabel)
 		} else {
@@ -606,6 +614,7 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 	case "bind":
 		// open_tree()-related shenanigans are all handled in mountViaFds.
 		if err := mountPropagate(m, rootfs, mountLabel); err != nil {
+			logrus.Errorf("DEBUG: In mountToRootfs mountPropagate failed: %v", err)
 			return err
 		}
 
@@ -618,9 +627,18 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 		// Note that the fact we check whether any clearing flags are set is in
 		// contrast to mount(8)'s current behaviour, but is what users probably
 		// expect. See <https://github.com/util-linux/util-linux/issues/2433>.
+		logrus.Errorf("DEBUG: In mountToRootfs continuing %v (%v || %v)", m.Flags&^(unix.MS_BIND|unix.MS_REC|unix.MS_REMOUNT) != 0 || m.ClearedFlags != 0, m.Flags&^(unix.MS_BIND|unix.MS_REC|unix.MS_REMOUNT) != 0, m.ClearedFlags != 0)
 		if m.Flags & ^(unix.MS_BIND|unix.MS_REC|unix.MS_REMOUNT) != 0 || m.ClearedFlags != 0 {
+			logrus.Errorf("DEBUG: In mountToRootfs going to remount %s (%s)", m.Destination, rootfs)
 			if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
-				flags := m.Flags | unix.MS_BIND | unix.MS_REMOUNT
+				flags := m.Flags
+				source := ""
+				if m.Destination == "/etc/secret-volume" {
+					flags = flags | unix.MS_BIND
+					source = m.Source
+				} else {
+					flags = flags | unix.MS_BIND | unix.MS_REMOUNT
+				}
 				// The runtime-spec says we SHOULD map to the relevant mount(8)
 				// behaviour. However, it's not clear whether we want the
 				// "mount --bind -o ..." or "mount --bind -o remount,..."
@@ -646,8 +664,41 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 				// different set of flags. This also has the mount(8) bug where
 				// "nodiratime,norelatime" will result in a
 				// "nodiratime,relatime" mount.
-				mountErr := mountViaFds("", nil, m.Destination, dstFd, "", uintptr(flags), "")
+				// if m.Destination == "/etc/secret-volume" {
+				// 	flags = m.Flags | unix.MS_BIND
+				// 	logrus.Errorf("DEBUG: In mountToRootfs going to remount %s (%s) with flags: %x (isIdmapped: %v - %v)", m.Destination, rootfs, flags, m.Mount.IsIDMapped(), m.Mount.IDMapping)
+				// 	mountErr := mountViaFds(m.Source, nil, dest, dstFd, "", uintptr(flags), data)
+				// 	if mountErr == nil {
+				// 		logrus.Errorf("DEBUG: In mountToRootfs, returning nil")
+				// 		return nil
+				// 	}
+				// }
+				logrus.Errorf("DEBUG: In mountToRootfs going to remount %s (%s) with flags: %x (isIdmapped: %v - %v)", m.Destination, rootfs, flags, m.Mount.IsIDMapped(), m.Mount.IDMapping)
+				mountErr := mountViaFds(source, nil, m.Destination, dstFd, "", uintptr(flags), "")
+				logrus.Errorf("DEBUG: In mountToRootfs mountErr: %v", mountErr)
+
 				if mountErr == nil {
+					// var usernsFile *os.File
+					// logrus.Errorf("DEBUG: In mountToRootfs, continuing: %v (%v, %v)", m.IsIDMapped() && m.Destination == "/etc/secret-volume", m.IsIDMapped(), m.Destination == "/etc/secret-volume")
+					// if m.IsIDMapped() && m.Destination == "/etc/secret-volume" {
+					// 	if m.IDMapping.UserNSPath == "" {
+					// 		usernsFile, err = os.Open("/proc/self/ns/user")
+					// 	} else {
+					// 		usernsFile, err = os.Open(m.IDMapping.UserNSPath)
+					// 	}
+					// 	defer usernsFile.Close()
+					//
+					// 	// Reapply MOUNT_ATTR_IDMAP to the remounted path.
+					// 	destPath := filepath.Join(rootfs, m.Destination)
+					// 	err = unix.MountSetattr(-1, destPath, unix.AT_RECURSIVE, &unix.MountAttr{
+					// 		Attr_set:  unix.MOUNT_ATTR_IDMAP,
+					// 		Userns_fd: uint64(usernsFile.Fd()),
+					// 	})
+					// 	if err != nil {
+					// 		return fmt.Errorf("failed to reapply idmap after remount: %v", err)
+					// 	}
+					// }
+
 					return nil
 				}
 
@@ -1274,6 +1325,7 @@ func mountPropagate(m mountEntry, rootfs string, mountLabel string) error {
 	// mutating underneath us, we verify that we are actually going to mount
 	// inside the container with WithProcfd() -- mounting through a procfd
 	// mounts on the target.
+	logrus.Errorf("DEBUG: In mountPropagate going to mount %s with flags: %x and data: %v (isIdmapped: %v - %v)", m.Destination, flags, data, m.Mount.IsIDMapped(), m.Mount.IDMapping)
 	if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
 		return mountViaFds(m.Source, m.srcFile, m.Destination, dstFd, m.Device, uintptr(flags), data)
 	}); err != nil {
@@ -1282,6 +1334,7 @@ func mountPropagate(m mountEntry, rootfs string, mountLabel string) error {
 	// We have to apply mount propagation flags in a separate WithProcfd() call
 	// because the previous call invalidates the passed procfd -- the mount
 	// target needs to be re-opened.
+	logrus.Errorf("DEBUG: In mountPropagate going to set propagation flags for %s (%s)", m.Destination, rootfs)
 	if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
 		for _, pflag := range m.PropagationFlags {
 			if err := mountViaFds("", nil, m.Destination, dstFd, "", uintptr(pflag), ""); err != nil {
@@ -1296,6 +1349,7 @@ func mountPropagate(m mountEntry, rootfs string, mountLabel string) error {
 }
 
 func setRecAttr(m *configs.Mount, rootfs string) error {
+	logrus.Errorf("DEBUG: In setRecAttr going to set recattr for %s (idmapping: %v)", m.Destination, m.IDMapping)
 	if m.RecAttr == nil {
 		return nil
 	}

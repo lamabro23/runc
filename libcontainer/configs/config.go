@@ -417,6 +417,7 @@ func (hooks *Hooks) MarshalJSON() ([]byte, error) {
 
 // Run executes all hooks for the given hook name.
 func (hooks Hooks) Run(name HookName, state *specs.State) error {
+	logrus.Errorf("DEBUG: In Run() running %s hooks with %v", name, state)
 	list := hooks[name]
 	for i, h := range list {
 		if err := h.Run(state); err != nil {
@@ -444,6 +445,7 @@ type FuncHook struct {
 }
 
 func (f FuncHook) Run(s *specs.State) error {
+	logrus.Errorf("DEBUG: running function hook")
 	return f.run(s)
 }
 
@@ -467,6 +469,7 @@ type CommandHook struct {
 }
 
 func (c Command) Run(s *specs.State) error {
+	logrus.Errorf("DEBUG: In Command.Run() running command hook %s %v", c.Path, c.Args)
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err

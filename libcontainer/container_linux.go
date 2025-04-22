@@ -299,6 +299,7 @@ type openResult struct {
 }
 
 func (c *Container) start(process *Process) (retErr error) {
+	logrus.Errorf("DEBUG: starting container %s", c.id)
 	if c.config.Cgroups.Resources.SkipDevices {
 		return errors.New("can't start container with SkipDevices set")
 	}
@@ -344,6 +345,7 @@ func (c *Container) start(process *Process) (retErr error) {
 	if err := utils.CloseExecFrom(3); err != nil {
 		return fmt.Errorf("unable to mark non-stdio fds as cloexec: %w", err)
 	}
+	logrus.Errorf("DEBUG: starting container init process %v", parent)
 	if err := parent.start(); err != nil {
 		return fmt.Errorf("unable to start container process: %w", err)
 	}

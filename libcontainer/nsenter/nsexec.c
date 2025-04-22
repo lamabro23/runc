@@ -268,7 +268,7 @@ static void update_uidmap(const char *path, int pid, char *map, size_t map_len)
 	if (map == NULL || map_len == 0)
 		return;
 
-	write_log(DEBUG, "update /proc/%d/uid_map to '%s'", pid, map);
+	write_log(ERROR, "update /proc/%d/uid_map to '%s'", pid, map);
 	if (write_file(map, map_len, "/proc/%d/uid_map", pid) < 0) {
 		if (errno != EPERM)
 			bail("failed to update /proc/%d/uid_map", pid);
@@ -513,7 +513,7 @@ void join_namespaces(char *nslist)
 		 */
 		if (flag == CLONE_NEWUSER) {
 			if (setresuid(0, 0, 0) < 0)
-				bail("failed to become root in user namespace");
+				bail("failed to become root in user namespace LOL");
 		}
 
 		close(ns->fd);
@@ -921,7 +921,7 @@ void nsexec(void)
 
 				/* Become root in the namespace proper. */
 				if (setresuid(0, 0, 0) < 0)
-					bail("failed to become root in user namespace");
+					bail("failed to become root in user namespace WOW");
 			}
 
 			/*

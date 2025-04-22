@@ -206,6 +206,7 @@ type runner struct {
 }
 
 func (r *runner) run(config *specs.Process) (int, error) {
+	logrus.Errorf("DEBUG: In run() with config: %v", r.container.Config())
 	var err error
 	defer func() {
 		if err != nil {
@@ -245,6 +246,10 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+	logrus.Errorf("DEBUG: In run() with rootuid: %d, rootgid: %d", rootuid, rootgid)
+	logrus.Errorf("DEBUG: In run() with: %v", r.container.Config().Namespaces)
+	logrus.Errorf("DEBUG: In run() with: %v", r.container.Config().UIDMappings)
+	logrus.Errorf("DEBUG: In run() with: %v", r.container.Config().GIDMappings)
 	detach := r.detach || (r.action == CT_ACT_CREATE)
 	// Setting up IO is a two stage process. We need to modify process to deal
 	// with detaching containers, and then we get a tty after the container has
@@ -266,10 +271,13 @@ func (r *runner) run(config *specs.Process) (int, error) {
 
 	switch r.action {
 	case CT_ACT_CREATE:
+		logrus.Errorf("DEBUG: In run() with CT_ACT_CREATE")
 		err = r.container.Start(process)
 	case CT_ACT_RESTORE:
+		logrus.Errorf("DEBUG: In run() with CT_ACT_RESTORE")
 		err = r.container.Restore(process, r.criuOpts)
 	case CT_ACT_RUN:
+		logrus.Errorf("DEBUG: In run() with CT_ACT_RUN")
 		err = r.container.Run(process)
 	default:
 		panic("Unknown action")
@@ -367,6 +375,7 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 		return -1, errEmptyID
 	}
 
+	logrus.Errorf("DEBUG: In startContainer() with id: %s and context %v - criuOpts: %v", id, context, criuOpts)
 	notifySocket := newNotifySocket(context, os.Getenv("NOTIFY_SOCKET"), id)
 	if notifySocket != nil {
 		notifySocket.setupSpec(spec)
@@ -376,6 +385,7 @@ func startContainer(context *cli.Context, action CtAct, criuOpts *libcontainer.C
 	if err != nil {
 		return -1, err
 	}
+	logrus.Errorf("DEBUG: In startContainer() with container: %v", container)
 
 	if notifySocket != nil {
 		if err := notifySocket.setupSocketDirectory(); err != nil {
