@@ -608,6 +608,8 @@ func createLibcontainerMount(cwd string, m specs.Mount) (*configs.Mount, error) 
 		mnt.IDMapping.GIDMappings = toConfigIDMap(m.GIDMappings)
 	}
 
+	mnt.ForceIdmap = m.ForceIdmap
+
 	// None of the mount arguments can contain a null byte. Normally such
 	// strings would either cause some other failure or would just be truncated
 	// when we hit the null byte, but because we serialise these strings as

@@ -604,110 +604,13 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 
 		return err
 	case "bind":
-		// open_tree()-related shenanigans are all handled in mountViaFds.
-		if err := mountPropagate(m, rootfs, mountLabel); err != nil {
-			return err
-		}
-
-		// The initial MS_BIND won't change the mount options, we need to do a
-		// separate MS_BIND|MS_REMOUNT to apply the mount options. We skip
-		// doing this if the user has not specified any mount flags at all
-		// (including cleared flags) -- in which case we just keep the original
-		// mount flags.
-		//
-		// Note that the fact we check whether any clearing flags are set is in
-		// contrast to mount(8)'s current behaviour, but is what users probably
-		// expect. See <https://github.com/util-linux/util-linux/issues/2433>.
-		if m.Flags & ^(unix.MS_BIND|unix.MS_REC|unix.MS_REMOUNT) != 0 || m.ClearedFlags != 0 {
-			if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
-				flags := m.Flags | unix.MS_BIND | unix.MS_REMOUNT
-				// The runtime-spec says we SHOULD map to the relevant mount(8)
-				// behaviour. However, it's not clear whether we want the
-				// "mount --bind -o ..." or "mount --bind -o remount,..."
-				// behaviour here -- both of which are somewhat broken[1].
-				//
-				// So, if the user has passed "remount" as a mount option, we
-				// implement the "mount --bind -o remount" behaviour, otherwise
-				// we implement the spiritual intent of the "mount --bind -o"
-				// behaviour, which should match what users expect. Maybe
-				// mount(8) will eventually implement this behaviour too..
-				//
-				// [1]: https://github.com/util-linux/util-linux/issues/2433
-
-				// Initially, we emulate "mount --bind -o ..." where we set
-				// only the requested flags (clearing any existing flags). The
-				// only difference from mount(8) is that we do this
-				// unconditionally, regardless of whether any set-me mount
-				// options have been requested.
-				//
-				// TODO: We are not doing any special handling of the atime
-				// flags here, which means that the mount will inherit the old
-				// atime flags if the user didn't explicitly request a
-				// different set of flags. This also has the mount(8) bug where
-				// "nodiratime,norelatime" will result in a
-				// "nodiratime,relatime" mount.
-				mountErr := mountViaFds("", nil, m.Destination, dstFd, "", uintptr(flags), "")
-				if mountErr == nil {
-					return nil
-				}
-
-				// If the mount failed, the mount may contain locked mount
-				// flags. In that case, we emulate "mount --bind -o
-				// remount,...", where we take the existing mount flags of the
-				// mount and apply the request flags (including clearing flags)
-				// on top. The main divergence we have from mount(8) here is
-				// that we handle atimes correctly to make sure we error out if
-				// we cannot fulfil the requested mount flags.
-
-				st, err := m.srcStatfs()
-				if err != nil {
-					return err
-				}
-				srcFlags := statfsToMountFlags(*st)
-
-				logrus.Debugf(
-					"working around failure to set vfs flags on bind-mount %s: srcFlags=%s flagsSet=%s flagsClr=%s: %v",
-					m.Destination, stringifyMountFlags(srcFlags),
-					stringifyMountFlags(m.Flags), stringifyMountFlags(m.ClearedFlags), mountErr)
-
-				// If the user explicitly request one of the locked flags *not*
-				// be set, we need to return an error to avoid producing mounts
-				// that don't match the user's request.
-				if cannotClearFlags := srcFlags & m.ClearedFlags & mntLockFlags; cannotClearFlags != 0 {
-					return fmt.Errorf("cannot clear locked flags %s: %w", stringifyMountFlags(cannotClearFlags), mountErr)
-				}
-
-				// If an MS_*ATIME flag was requested, it must match the
-				// existing one. This handles two separate kernel bugs, and
-				// matches the logic of can_change_locked_flags() but without
-				// these bugs:
-				//
-				// * (2.6.30+) Since commit 613cbe3d4870 ("Don't set relatime
-				// when noatime is specified"), MS_RELATIME is ignored when
-				// MS_NOATIME is set. This means that us inheriting MS_NOATIME
-				// from a mount while requesting MS_RELATIME would *silently*
-				// produce an MS_NOATIME mount.
-				//
-				// * (2.6.30+) Since its introduction in commit d0adde574b84
-				// ("Add a strictatime mount option"), MS_STRICTATIME has
-				// caused any passed MS_RELATIME and MS_NOATIME flags to be
-				// ignored which results in us *silently* producing
-				// MS_STRICTATIME mounts even if the user requested MS_RELATIME
-				// or MS_NOATIME.
-				if m.Flags&mntAtimeFlags != 0 && m.Flags&mntAtimeFlags != srcFlags&mntAtimeFlags {
-					return fmt.Errorf("cannot change locked atime flags %s: %w", stringifyMountFlags(srcFlags&mntAtimeFlags), mountErr)
-				}
-
-				// Retry the mount with the existing lockable mount flags
-				// applied.
-				flags |= srcFlags & mntLockFlags
-				mountErr = mountViaFds("", nil, m.Destination, dstFd, "", uintptr(flags), "")
-				if mountErr != nil {
-					mountErr = fmt.Errorf("remount with locked flags %s re-applied: %w", stringifyMountFlags(srcFlags&mntLockFlags), mountErr)
-				}
-				return mountErr
-			}); err != nil {
-				return fmt.Errorf("failed to set user-requested vfs flags on bind-mount: %w", err)
+		if m.Mount.ForceIdmap {
+			if err := handleForcedIdmapBindMount(m, rootfs); err != nil {
+				return fmt.Errorf("error mounting %q to %q: %w", m.Source, m.Destination, err)
+			}
+		} else {
+			if err := handleBindMount(m, c, rootfs, mountLabel); err != nil {
+				return fmt.Errorf("error mounting %q to %q: %w", m.Source, m.Destination, err)
 			}
 		}
 
@@ -729,6 +632,148 @@ func mountToRootfs(c *mountConfig, m mountEntry) error {
 	default:
 		return mountPropagate(m, rootfs, mountLabel)
 	}
+}
+
+func handleForcedIdmapBindMount(m mountEntry, rootfs string) error {
+	if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
+		flags := m.Flags | unix.MS_BIND
+		mountErr := mountViaFds(m.Source, nil, m.Destination, dstFd, "", uintptr(flags), "")
+		if mountErr == nil {
+			return nil
+		}
+
+		st, err := m.srcStatfs()
+		if err != nil {
+			return err
+		}
+		srcFlags := statfsToMountFlags(*st)
+
+		if srcFlags&m.ClearedFlags&mntLockFlags != 0 {
+			return mountErr
+		}
+
+		if m.Flags&mntAtimeFlags != 0 && m.Flags&mntAtimeFlags != srcFlags&mntAtimeFlags {
+			return mountErr
+		}
+		return mountErr
+	}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func handleBindMount(m mountEntry, c *mountConfig, rootfs, mountLabel string) error {
+	// open_tree()-related shenanigans are all handled in mountViaFds.
+	if err := mountPropagate(m, rootfs, mountLabel); err != nil {
+		logrus.Errorf("DEBUG: In mountToRootfs mountPropagate failed: %v", err)
+		return err
+	}
+
+	// The initial MS_BIND won't change the mount options, we need to do a
+	// separate MS_BIND|MS_REMOUNT to apply the mount options. We skip
+	// doing this if the user has not specified any mount flags at all
+	// (including cleared flags) -- in which case we just keep the original
+	// mount flags.
+	//
+	// Note that the fact we check whether any clearing flags are set is in
+	// contrast to mount(8)'s current behaviour, but is what users probably
+	// expect. See <https://github.com/util-linux/util-linux/issues/2433>.
+	if m.Flags & ^(unix.MS_BIND|unix.MS_REC|unix.MS_REMOUNT) != 0 || m.ClearedFlags != 0 {
+		if err := utils.WithProcfd(rootfs, m.Destination, func(dstFd string) error {
+			flags := m.Flags | unix.MS_BIND | unix.MS_REMOUNT
+			// The runtime-spec says we SHOULD map to the relevant mount(8)
+			// behaviour. However, it's not clear whether we want the
+			// "mount --bind -o ..." or "mount --bind -o remount,..."
+			// behaviour here -- both of which are somewhat broken[1].
+			//
+			// So, if the user has passed "remount" as a mount option, we
+			// implement the "mount --bind -o remount" behaviour, otherwise
+			// we implement the spiritual intent of the "mount --bind -o"
+			// behaviour, which should match what users expect. Maybe
+			// mount(8) will eventually implement this behaviour too..
+			//
+			// [1]: https://github.com/util-linux/util-linux/issues/2433
+
+			// Initially, we emulate "mount --bind -o ..." where we set
+			// only the requested flags (clearing any existing flags). The
+			// only difference from mount(8) is that we do this
+			// unconditionally, regardless of whether any set-me mount
+			// options have been requested.
+			//
+			// TODO: We are not doing any special handling of the atime
+			// flags here, which means that the mount will inherit the old
+			// atime flags if the user didn't explicitly request a
+			// different set of flags. This also has the mount(8) bug where
+			// "nodiratime,norelatime" will result in a
+			// "nodiratime,relatime" mount.
+			mountErr := mountViaFds("", nil, m.Destination, dstFd, "", uintptr(flags), "")
+
+			if mountErr == nil {
+				return nil
+			}
+
+			// If the mount failed, the mount may contain locked mount
+			// flags. In that case, we emulate "mount --bind -o
+			// remount,...", where we take the existing mount flags of the
+			// mount and apply the request flags (including clearing flags)
+			// on top. The main divergence we have from mount(8) here is
+			// that we handle atimes correctly to make sure we error out if
+			// we cannot fulfil the requested mount flags.
+
+			st, err := m.srcStatfs()
+			if err != nil {
+				return err
+			}
+			srcFlags := statfsToMountFlags(*st)
+
+			logrus.Debugf(
+				"working around failure to set vfs flags on bind-mount %s: srcFlags=%s flagsSet=%s flagsClr=%s: %v",
+				m.Destination, stringifyMountFlags(srcFlags),
+				stringifyMountFlags(m.Flags), stringifyMountFlags(m.ClearedFlags), mountErr)
+
+			// If the user explicitly request one of the locked flags *not*
+			// be set, we need to return an error to avoid producing mounts
+			// that don't match the user's request.
+			if cannotClearFlags := srcFlags & m.ClearedFlags & mntLockFlags; cannotClearFlags != 0 {
+				return fmt.Errorf("cannot clear locked flags %s: %w", stringifyMountFlags(cannotClearFlags), mountErr)
+			}
+
+			// If an MS_*ATIME flag was requested, it must match the
+			// existing one. This handles two separate kernel bugs, and
+			// matches the logic of can_change_locked_flags() but without
+			// these bugs:
+			//
+			// * (2.6.30+) Since commit 613cbe3d4870 ("Don't set relatime
+			// when noatime is specified"), MS_RELATIME is ignored when
+			// MS_NOATIME is set. This means that us inheriting MS_NOATIME
+			// from a mount while requesting MS_RELATIME would *silently*
+			// produce an MS_NOATIME mount.
+			//
+			// * (2.6.30+) Since its introduction in commit d0adde574b84
+			// ("Add a strictatime mount option"), MS_STRICTATIME has
+			// caused any passed MS_RELATIME and MS_NOATIME flags to be
+			// ignored which results in us *silently* producing
+			// MS_STRICTATIME mounts even if the user requested MS_RELATIME
+			// or MS_NOATIME.
+			if m.Flags&mntAtimeFlags != 0 && m.Flags&mntAtimeFlags != srcFlags&mntAtimeFlags {
+				return fmt.Errorf("cannot change locked atime flags %s: %w", stringifyMountFlags(srcFlags&mntAtimeFlags), mountErr)
+			}
+
+			// Retry the mount with the existing lockable mount flags
+			// applied.
+			flags |= srcFlags & mntLockFlags
+			mountErr = mountViaFds("", nil, m.Destination, dstFd, "", uintptr(flags), "")
+			if mountErr != nil {
+				mountErr = fmt.Errorf("remount with locked flags %s re-applied: %w", stringifyMountFlags(srcFlags&mntLockFlags), mountErr)
+			}
+			return mountErr
+		}); err != nil {
+			return fmt.Errorf("failed to set user-requested vfs flags on bind-mount: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func getCgroupMounts(m *configs.Mount) ([]*configs.Mount, error) {

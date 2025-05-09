@@ -55,6 +55,8 @@ type Mount struct {
 	// Mapping is the MOUNT_ATTR_IDMAP configuration for the mount. If non-nil,
 	// the mount is configured to use MOUNT_ATTR_IDMAP-style id mappings.
 	IDMapping *MountIDMapping `json:"id_mapping,omitempty"`
+
+	ForceIdmap bool `json:"force_idmap,omitempty"`
 }
 
 func (m *Mount) IsBind() bool {
